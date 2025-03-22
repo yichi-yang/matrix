@@ -3,6 +3,8 @@ import json
 import random
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import zipfile
+import glob
 
 import numpy as np
 import pandas as pd
@@ -66,7 +68,29 @@ class VideoDataset(Dataset):
         with open(os.path.join(index_file), "r") as f:
             index = json.load(f)
         items = index['list']
+
+        # Handle zip archives here so taht we don't need to decompress them
+        zip_map = {}
+        for path in glob.glob(os.path.join(self.data_root, "*.zip")):
+            try:
+                with zipfile.ZipFile(path) as file:
+                    for name in file.namelist():
+                        zip_map[name] = path
+            except zipfile.BadZipFile:
+                logger.warning(f"Failed to read {path}.")
+
+        # Some zips we downloaded are emmpty. Handle the missing videos here.
+        items_that_exist = []
+        for item in items:
+            path = item["path"]
+            if path in zip_map:
+                items_that_exist.append({**item, "zip_path": zip_map[path]})
+        if len(items_that_exist) < len(items):
+            logger.warning(f"Missing {len(items) - len(items_that_exist)}/{len(items)} samples.")
+        items = items_that_exist
+
         self.video_paths = [i["path"] for i in items]
+        self.zip_paths = [i["zip_path"] for i in items]
         self.prompts = [i["caption"] for i in items]
         self.control_signal_seq = [i["control_signal_seq"] for i in items]
         self.valid_frame_idx = [i["valid_frame_idx"] for i in items]
@@ -95,7 +119,13 @@ class VideoDataset(Dataset):
     def __getitem__(self, meta) -> Dict[str, Any]:
         index, resolution_id = meta
         fname = self.video_paths[index]
-        image, video, control_signal = self._preprocess_video(Path(os.path.join(self.data_root, fname)), index, resolution_id)
+        zip_path = self.zip_paths[index]
+
+        with zipfile.ZipFile(zip_path) as zip:
+            with zip.open(fname) as file:
+                image, video, control_signal = self._preprocess_video(
+                    file, index, resolution_id
+                )
 
         return {
             "prompt": self.id_token + self.prompts[index],
@@ -109,7 +139,6 @@ class VideoDataset(Dataset):
             "control_signal": control_signal
         }
 
-
     # depracated
     def _preprocess_video(self, path: Path) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         r"""
@@ -122,7 +151,7 @@ class VideoDataset(Dataset):
         F, C, H and W are the frames, channels, height and width of the latent, and S, D are the sequence length
         and embedding dimension of prompt embeddings.
         """
-        video_reader = decord.VideoReader(uri=path.as_posix())
+        video_reader = decord.VideoReader(uri=path)
         video_num_frames = len(video_reader)
 
         indices = list(range(0, video_num_frames, video_num_frames // self.max_num_frames))
@@ -141,7 +170,7 @@ class VideoDatasetWithResizing(VideoDataset):
         super().__init__(*args, **kwargs)
 
     def _preprocess_video(self, path: Path, index, resolution_id=0) -> torch.Tensor:
-        video_reader = decord.VideoReader(uri=path.as_posix())
+        video_reader = decord.VideoReader(uri=path)
         video_num_frames = len(video_reader)
         o_frame, o_hight, o_width = self.resolutions[resolution_id]
 
@@ -218,7 +247,7 @@ class VideoDatasetWithResizeAndRectangleCrop(VideoDataset):
         return arr
 
     def _preprocess_video(self, path: Path, index, resolution_id=0) -> torch.Tensor:
-        video_reader = decord.VideoReader(uri=path.as_posix())
+        video_reader = decord.VideoReader(uri=path)
         video_num_frames = len(video_reader)
         o_frame, o_hight, o_width = self.resolutions[resolution_id]
 

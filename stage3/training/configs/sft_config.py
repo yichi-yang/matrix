@@ -1,19 +1,17 @@
 from easydict import EasyDict
 import datetime
 import pytz
-import os
-import oss2 as oss
 
 args = EasyDict()
 
 # Model Arguments
-args.pretrained_model_name_or_path = "../models/stage2"  # str: Path to pretrained model or model identifier from huggingface.co/models.
+args.pretrained_model_name_or_path = "/mbz/users/yi.gu/.cache/huggingface/hub/models--MatrixTeam--TheMatrix/snapshots/06364bfc591b2a4ef18c10aa33904117e9974f2c/stage2"  # str: Path to pretrained model or model identifier from huggingface.co/models.
 args.revision = None  # str: Revision of pretrained model identifier from huggingface.co/models.
 args.variant = None  # str: Variant of the model files of the pretrained model identifier from huggingface.co/models, 'e.g.' fp16.
 
 # Dataset Arguments
-args.data_root = "../data/videos/"  # str: A folder containing the training data.
-args.index_file = "../data/241009_data_index_noreset_EN.json"
+args.data_root = "/mbz/users/yi.gu/murray/matrix_data/data"  # str: A folder containing the training data.
+args.index_file = "/mbz/users/yi.gu/murray/matrix_data/data/stage3_annotations.json"
 args.id_token = None  # **depracated** str: Identifier token appended to the start of each prompt if provided.
 args.height_buckets = [480]  # list[int]: Height buckets for resizing input videos.
 args.width_buckets = [720]  # list[int]: Width buckets for resizing input videos.
@@ -40,7 +38,7 @@ args.seed = 42  # int: A seed for reproducible training.
 args.rank = None  # int: The rank for LoRA matrices.
 args.lora_alpha = None  # int: The lora_alpha to compute scaling factor (lora_alpha / rank) for LoRA matrices.
 args.mixed_precision = "bf16"  # str: Whether to use mixed precision. Choose between fp16 and bf16 (bfloat16). Bf16 requires PyTorch >= 1.10.and an Nvidia Ampere GPU. Default to the value of accelerate config of the current system or the flag passed with the `accelerate.launch` command. Use this argument to override the accelerate config.
-args.output_dir = "output/sft/stage3/"+datetime.datetime.now(pytz.timezone('Asia/Shanghai')).strftime("%Y-%m-%d_%H-%M-%S")  # str: The output directory where the model predictions and checkpoints will be written.
+args.output_dir = "output/sft/stage3/"+datetime.datetime.now(pytz.timezone('America/Los_Angeles')).strftime("%Y-%m-%d_%H-%M-%S")  # str: The output directory where the model predictions and checkpoints will be written.
 args.height = 480  # int: All input videos are resized to this height. (Only use for validation)
 args.width = 720  # int: All input videos are resized to this width. (Only use for validation)
 args.video_reshape_mode = "center"  # str: All input videos are reshaped to this mode. Choose between ['center', 'random', 'none'].
@@ -48,10 +46,10 @@ args.fps = 16  # int: All input videos will be used at this FPS.
 args.max_num_frames = 65  # int: All input videos will be truncated to these many frames.
 args.skip_frames_start = 0  # int: Number of frames to skip from the beginning of each input video. Useful if training data contains intro sequences.
 args.skip_frames_end = 0  # int: Number of frames to skip from the end of each input video. Useful if training data contains outro sequences.
-args.train_batch_size = 8  # int: Batch size (per device) for the training dataloader.
+args.train_batch_size = 4  # int: Batch size (per device) for the training dataloader.
 args.num_train_epochs = None  # **deprecated** int: Total number of epochs to train the model.
 args.max_train_steps = 100000  # int: Total number of training steps to perform. If provided, overrides `--num_train_epochs`.
-args.checkpointing_steps = 200  # int: Save a checkpoint of the training state every X updates. These checkpoints can be used both as final checkpoints in case they are better than the last checkpoint, and are also suitable for resuming training using `--resume_from_checkpoint`.
+args.checkpointing_steps = 1000  # int: Save a checkpoint of the training state every X updates. These checkpoints can be used both as final checkpoints in case they are better than the last checkpoint, and are also suitable for resuming training using `--resume_from_checkpoint`.
 args.checkpoints_total_limit = None  # int: Max number of checkpoints to store.
 args.resume_from_checkpoint = None  # str: Whether training should be resumed from a previous checkpoint. Use a path saved by `--checkpointing_steps`, or "latest" to automatically select the last available checkpoint.
 args.gradient_accumulation_steps = 1  # int: Number of updates steps to accumulate before performing a backward/update pass.
