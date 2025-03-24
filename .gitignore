@@ -178,4 +178,4 @@ data/
 models/
 # *.mp4
 
-slurm-*.output
+slurm-*.out
