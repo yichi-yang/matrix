@@ -51,6 +51,7 @@ def generate_random_control_signal(
 def generate_video(
     prompt: str,
     model_path: str,
+    transformer_path: str | None,
     lora_path: str = None,
     lora_rank: int = 128,
     num_frames: int = 81,
@@ -93,7 +94,7 @@ def generate_video(
     """
 
     transformer = CogVideoXTransformer3DModel.from_pretrained(
-        os.path.join(model_path, "transformer"),
+        os.path.join(transformer_path or model_path, "transformer"),
         torch_dtype=dtype,
         low_cpu_mem_usage=False
     )
@@ -162,6 +163,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate a video from a text prompt using CogVideoX")
     parser.add_argument("--prompt", type=str, help="The description of the video to be generated")
     parser.add_argument("--model_path", type=str, help="Path of the pre-trained model use")
+    parser.add_argument("--transformer_path", type=str, default=None)
     parser.add_argument("--video_path", type=str, help="The path of the video to be extend.")
     parser.add_argument("--lora_path", type=str, default=None, help="The path of the LoRA weights to be used")
     parser.add_argument("--lora_rank", type=int, default=256, help="The rank of the LoRA weights")
@@ -190,6 +192,7 @@ if __name__ == "__main__":
     generate_video(
         prompt=args.prompt,
         model_path=args.model_path,
+        transformer_path=args.transformer_path,
         lora_path=args.lora_path,
         lora_rank=args.lora_rank,
         output_path=args.output_path,
