@@ -475,7 +475,8 @@ def main(args):
         "width_buckets": args.width_buckets,
         "frame_buckets": args.frame_buckets,
         "index_file": args.index_file,
-        "fps": args.fps
+        "fps": args.fps,
+        "actions_in_prompt": args.get('actions_in_prompt', False),
     }
     if args.video_reshape_mode is None:
         train_dataset = VideoDatasetWithResizing(**dataset_init_kwargs)

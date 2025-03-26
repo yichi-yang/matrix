@@ -21,6 +21,7 @@ args.random_flip = None  # **depracated** float: If random horizontal flip augme
 args.dataloader_num_workers = 8  # int: Number of subprocesses to use for data loading. 0 means that the data will be loaded in the main process.
 args.pin_memory = True  # bool: Whether or not to use the pinned memory setting in pytorch dataloader.
 args.prefetch_factor = 2
+args.actions_in_prompt = True  # Put actions in the prompt like PAN
 
 # Validation Arguments
 args.validation_prompt = None  # **deprecated** str: One or more prompt(s) that is used during validation to verify that the model is learning. Multiple validation prompts should be separated by the '--validation_prompt_separator' string.
@@ -94,8 +95,8 @@ args.report_to = "wandb"  # str: The integration to report the results and logs 
 
 # Control
 args.control_p_zero = 0.1  # float: Classifier-free guidance for control signal.
-args.control_start_layer = 30 // 2  # int: NOTE MAGIC NUMBER HERE, number from CogVideoX-2b
-args.control_end_layer = 30  # int: NOTE MAGIC NUMBER HERE, number from CogVideoX-2b
+args.control_start_layer = 0  # int: NOTE MAGIC NUMBER HERE, number from CogVideoX-2b
+args.control_end_layer = 0  # int: NOTE MAGIC NUMBER HERE, number from CogVideoX-2b
 args.control_zero_init = True  # bool
 
 #  Swin DPM Arguments

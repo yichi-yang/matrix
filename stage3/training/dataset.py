@@ -30,6 +30,18 @@ FRAME_BUCKETS = [16, 24, 32, 48, 64, 80]
 
 
 class VideoDataset(Dataset):
+    CONTROL_SIGNAL_TO_PROMPT = {
+        "D": "forward",
+        "DL": "forward left",
+        "DR": "forward right",
+        "B": "backward",
+        "BL": "backward left",
+        "BR": "backward right",
+        "N": "neutral",
+        "NL": "neutral left",
+        "NR": "neutral right",
+    }
+
     def __init__(
         self,
         data_root: str,
@@ -44,7 +56,8 @@ class VideoDataset(Dataset):
         random_flip: Optional[float] = None,
         image_to_video: bool = False,
         index_file: str = None,
-        fps: int = None
+        fps: int = None,
+        actions_in_prompt: bool = False,
     ) -> None:
         super().__init__()
 
@@ -60,6 +73,7 @@ class VideoDataset(Dataset):
         self.random_flip = random_flip
         self.image_to_video = image_to_video
         self.fps = fps
+        self.actions_in_prompt = actions_in_prompt
 
         self.resolutions = [
             (f, h, w) for h in self.height_buckets for w in self.width_buckets for f in self.frame_buckets
@@ -127,8 +141,16 @@ class VideoDataset(Dataset):
                     file, index, resolution_id
                 )
 
+        prompt = self.prompts[index]
+        if self.actions_in_prompt:
+            action_prompt = [
+                self.CONTROL_SIGNAL_TO_PROMPT[c] for c in control_signal.split(',')
+            ]
+            action_prompt = ", ".join(action_prompt)
+            prompt = f'Actions: {action_prompt}. Description: {prompt}'
+
         return {
-            "prompt": self.id_token + self.prompts[index],
+            "prompt": self.id_token + prompt,
             "image": image,
             "video": video,
             "video_metadata": {
