@@ -17,6 +17,7 @@ import gc
 import logging
 import math
 import os
+import platform
 import shutil
 from datetime import timedelta, datetime
 from pathlib import Path
@@ -627,6 +628,10 @@ def main(args):
             batch = next(train_dataloader_iter)
         except Exception as e:
             raise e
+
+        if global_step == 0:
+            print(f'{platform.node()} rank {accelerator.process_index} started step 0')
+
         models_to_accumulate = [transformer]
         logs = {}
 

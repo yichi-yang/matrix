@@ -5,7 +5,7 @@
 #SBATCH --gpus-per-node=8
 #SBATCH --cpus-per-task=224
 #SBATCH --partition=wm
-#SBATCH --exclude=g42-h100-instance-[134,135,065,084,085,030,160]
+#SBATCH --exclude=g42-h100-instance-[134,135,065,084,085,030,160,049]
 
 # export TORCH_LOGS="+dynamo,recompiles,graph_breaks"
 # export TORCHDYNAMO_VERBOSE=1
@@ -60,4 +60,4 @@ srun sh -c 'accelerate launch --config_file $ACCELERATE_CONFIG_FILE \
     --num_machines $SLURM_NNODES \
     --num_processes $((SLURM_NNODES * 8)) \
     --gpu_ids $GPU_IDS \
-    training/cogvideox_text_to_video_sft.py --config configs/sft_config_from_stage1.py'
+    training/cogvideox_text_to_video_sft.py --config configs/sft_config_from_stage1_t5_actions.py'
