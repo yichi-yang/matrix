@@ -800,6 +800,19 @@ def retrieve_latents(
 
 
 class CogVideoXStreamingPipeline(CogVideoXPipeline):
+
+    CONTROL_SIGNAL_TO_PROMPT = {
+        "D": "forward",
+        "DL": "forward left",
+        "DR": "forward right",
+        "B": "backward",
+        "BL": "backward left",
+        "BR": "backward right",
+        "N": "neutral",
+        "NL": "neutral left",
+        "NR": "neutral right",
+    }
+
     def __init__(
         self,
         tokenizer: T5Tokenizer,
@@ -883,7 +896,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         # scale the initial noise by the standard deviation required by the scheduler
         latents = latents * self.scheduler.init_noise_sigma
         return latents
-    
+
     def get_control_from_signal(self, control_signal, start=None, end=None):
         if not hasattr(self, "control_embeddings"):
             clip_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-large-patch14")
@@ -934,7 +947,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             frames = torch.cat(frames, dim=2)
         else:
             frames = self.vae.decode(latents).sample
-        
+
         return frames
 
     @torch.no_grad()
@@ -965,6 +978,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         num_noise_groups=4,  # number of noise group number
         num_sample_groups=8,  # number of outer sampling loop, and each iteration output a group of video tokens.
         with_frame_cond=True,  # whether to use frame condition, if ture the first frame is used as condition with zero noise.
+        actions_in_prompt: bool = False
     ):
         assert isinstance(self.scheduler, CogVideoXSwinDPMScheduler)
 
@@ -988,7 +1002,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             outer_steps = num_sample_groups
             inner_steps = num_inference_steps // num_noise_groups
             window_size = num_frames // num_noise_groups
-        
+
         if with_frame_cond:    
             num_frames_nocond = num_frames - 1
         else:
@@ -1000,12 +1014,12 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         assert (
             num_inference_steps % num_noise_groups == 0
         ), "total inference step number should be divisible by num_noise_groups"
-            
+
         # print(f"Total video tokens in the queue (F): {num_frames}")
         # print(f"Noise group number (G): {num_noise_groups}")
         # print(f"Window size (W): {window_size}")
         # print(f"Num_sample_groups (S): {num_sample_groups}")
-        # print(f"Output frame number (S*W*4 + 1): {num_frames * num_noise_groups * 4 + 1}") 
+        # print(f"Output frame number (S*W*4 + 1): {num_frames * num_noise_groups * 4 + 1}")
 
         # 1. Check inputs. Raise error if not correct
         self.check_inputs(
@@ -1036,20 +1050,6 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = guidance_scale > 1.0
 
-        # 3. Encode input prompt
-        prompt_embeds, negative_prompt_embeds = self.encode_prompt(
-            prompt,
-            negative_prompt,
-            do_classifier_free_guidance,
-            num_videos_per_prompt=num_videos_per_prompt,
-            prompt_embeds=prompt_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
-            max_sequence_length=max_sequence_length,
-            device=device,
-        )
-        if do_classifier_free_guidance:
-            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
-
         # 4. Prepare timesteps
         timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps)
 
@@ -1066,12 +1066,12 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         # 5. Prepare latents.
         if latents is None:
             init_video = self.video_processor.preprocess_video(init_video, height=height, width=width)
-            init_video = init_video.to(device=device, dtype=prompt_embeds.dtype)
+            init_video = init_video.to(device=device, dtype=self.transformer.dtype)
             latents = None
         else:
             init_video = None
-            latents = latents.to(device, dtype=prompt_embeds.dtype)
-        
+            latents = latents.to(device, dtype=self.transformer.dtype)
+
         latent_channels = self.transformer.config.in_channels
         latents = self.prepare_latents(
             init_video,
@@ -1080,7 +1080,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             num_frames,
             height,
             width,
-            prompt_embeds.dtype,
+            self.transformer.dtype,
             device,
             generator,
             latents,
@@ -1107,9 +1107,31 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         for group_idx in range(outer_steps):
             print(f"Computing the {group_idx + 1}th/{num_sample_groups} group of video tokens...")
 
+            prompt_with_actions = prompt
+            if prompt is not None and actions_in_prompt:
+                control_end = control_start + num_frames
+                current_controls = control_signal.split(",")[control_start:control_end]
+                actions = [self.CONTROL_SIGNAL_TO_PROMPT[c] for c in current_controls]
+                actions = ", ".join(actions)
+                prompt_with_actions = f"Actions: {actions}. Description: {prompt}"
+
+            # 3. Encode input prompt
+            curr_prompt_embeds, curr_negative_embeds = self.encode_prompt(
+                prompt_with_actions,
+                negative_prompt,
+                do_classifier_free_guidance,
+                num_videos_per_prompt=num_videos_per_prompt,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                max_sequence_length=max_sequence_length,
+                device=device,
+            )
+            if do_classifier_free_guidance:
+                curr_prompt_embeds = torch.cat([curr_negative_embeds, curr_prompt_embeds], dim=0)
+
             # Control signal
             control_emb = self.get_control_from_signal(control_signal, control_start, control_start+num_frames)
-            control_emb = control_emb.unsqueeze(0).to(prompt_embeds.dtype).contiguous()
+            control_emb = control_emb.unsqueeze(0).to(self.transformer.dtype).contiguous()
             control_start += window_size
 
             with self.progress_bar(total=inner_steps) as progress_bar:
@@ -1135,7 +1157,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
                     # predict noise model_output
                     noise_pred = self.transformer(
                         hidden_states=latent_model_input,
-                        encoder_hidden_states=prompt_embeds,
+                        encoder_hidden_states=curr_prompt_embeds,
                         timestep=timesteps,
                         image_rotary_emb=image_rotary_emb,
                         attention_kwargs=attention_kwargs,
@@ -1167,7 +1189,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
                             **extra_step_kwargs,
                             return_dict=False,
                         )
-                        latents = latents.to(prompt_embeds.dtype)
+                        latents = latents.to(self.transformer.dtype)
                         latents = torch.cat([latents_cond, latents], dim=1)  # keep cond frame unchanged
                     else:
                         latents, old_pred_original_sample = self.scheduler.step(
@@ -1179,7 +1201,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
                             **extra_step_kwargs,
                             return_dict=False,
                         )
-                        latents = latents.to(prompt_embeds.dtype)       
+                        latents = latents.to(self.transformer.dtype)       
 
                     if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                         progress_bar.update()
