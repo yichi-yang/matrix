@@ -842,6 +842,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         generator: Optional[torch.Generator] = None,
         latents: Optional[torch.Tensor] = None,
         timestep: Optional[torch.Tensor] = None,
+        no_noise_on_condition_frames = False,
     ):
         if isinstance(generator, list) and len(generator) != batch_size:
             raise ValueError(
@@ -888,10 +889,18 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
             latents = self.scheduler.add_noise(init_latents, noise, timestep.unsqueeze(0).repeat(batch_size, 1))
         else:
+            init_latents = latents
             # add grouped noise
             noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
             latents = self.scheduler.add_noise(latents, noise, timestep.unsqueeze(0).repeat(batch_size, 1))
             latents = latents.to(device)
+
+        if no_noise_on_condition_frames:
+            latents = torch.where(
+                timestep.unsqueeze(0).repeat(batch_size, 1)[..., None, None, None] > 0,
+                latents,
+                init_latents,
+            )
 
         # scale the initial noise by the standard deviation required by the scheduler
         latents = latents * self.scheduler.init_noise_sigma
@@ -978,7 +987,9 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         num_noise_groups=4,  # number of noise group number
         num_sample_groups=8,  # number of outer sampling loop, and each iteration output a group of video tokens.
         with_frame_cond=True,  # whether to use frame condition, if ture the first frame is used as condition with zero noise.
-        actions_in_prompt: bool = False
+        actions_in_prompt: bool = False,
+        cfg_zero_prompt_embed: bool = False,
+        no_noise_on_condition_frames: bool = False,
     ):
         assert isinstance(self.scheduler, CogVideoXSwinDPMScheduler)
 
@@ -1085,6 +1096,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             generator,
             latents,
             timesteps_grouped[0],
+            no_noise_on_condition_frames=no_noise_on_condition_frames,
         )
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
@@ -1126,6 +1138,8 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
                 max_sequence_length=max_sequence_length,
                 device=device,
             )
+            if cfg_zero_prompt_embed:
+                curr_negative_embeds = torch.zeros_like(curr_negative_embeds)
             if do_classifier_free_guidance:
                 curr_prompt_embeds = torch.cat([curr_negative_embeds, curr_prompt_embeds], dim=0)
 

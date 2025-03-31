@@ -73,6 +73,8 @@ def generate_video(
     num_sample_groups: int = 20,
     init_video_clip_frame: int = 65,
     actions_in_prompt: bool = False,
+    cfg_zero_prompt_embed: bool = False,
+    no_noise_on_condition_frames: bool = False,
 ):
     """
     Generates a video based on the given prompt and saves it to the specified path.
@@ -156,7 +158,9 @@ def generate_video(
             init_video=video,
             num_noise_groups=num_noise_groups,
             num_sample_groups=num_sample_groups,
-            actions_in_prompt=actions_in_prompt
+            actions_in_prompt=actions_in_prompt,
+            cfg_zero_prompt_embed=cfg_zero_prompt_embed,
+            no_noise_on_condition_frames=no_noise_on_condition_frames,
         ).frames[0]
         export_to_video(video_generate, output_path, fps=fps)
 
@@ -189,6 +193,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_sample_groups", type=int, default=8, help="Number of sampled videos groups")
     parser.add_argument("--init_video_clip_frame", type=int, default=65, help="Frame number of init_video to be clipped, should be 4n+1")
     parser.add_argument("--actions_in_prompt", action='store_true')
+    parser.add_argument("--cfg_zero_prompt_embed", action='store_true')
+    parser.add_argument("--no_noise_on_condition_frames", action='store_true')
 
     args = parser.parse_args()
     dtype = torch.float16 if args.dtype == "float16" else torch.bfloat16
@@ -217,4 +223,6 @@ if __name__ == "__main__":
         num_noise_groups=args.num_noise_groups,
         init_video_clip_frame=args.init_video_clip_frame,
         actions_in_prompt=args.actions_in_prompt,
+        cfg_zero_prompt_embed=args.cfg_zero_prompt_embed,
+        no_noise_on_condition_frames=args.no_noise_on_condition_frames,
     )
