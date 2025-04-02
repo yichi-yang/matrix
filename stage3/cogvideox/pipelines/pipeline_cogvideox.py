@@ -531,7 +531,7 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         ] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 226,
-        control_signal: List[str] = None
+        control_signal: List[str] = None,
     ) -> Union[CogVideoXPipelineOutput, Tuple]:
         """
         Function invoked when calling the pipeline for generation.
@@ -988,8 +988,10 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         num_sample_groups=8,  # number of outer sampling loop, and each iteration output a group of video tokens.
         with_frame_cond=True,  # whether to use frame condition, if ture the first frame is used as condition with zero noise.
         actions_in_prompt: bool = False,
+        actions_in_prompt_repeat: int = 4,
         cfg_zero_prompt_embed: bool = False,
         no_noise_on_condition_frames: bool = False,
+        show_progress: str | tuple = "inner"
     ):
         assert isinstance(self.scheduler, CogVideoXSwinDPMScheduler)
 
@@ -1034,7 +1036,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
 
         # 1. Check inputs. Raise error if not correct
         self.check_inputs(
-            prompt,
+            '' if actions_in_prompt is not None else prompt,  # hack to make it not complain
             height,
             width,
             negative_prompt,
@@ -1051,6 +1053,8 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             batch_size = 1
         elif prompt is not None and isinstance(prompt, list):
             batch_size = len(prompt)
+        elif prompt is None and actions_in_prompt:
+            batch_size = 1
         else:
             batch_size = prompt_embeds.shape[0]
 
@@ -1114,18 +1118,26 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         # Control signal
         control_start = 0 if with_frame_cond else 1
 
-        print("Starting streaming video prediction...")
         latents_pop_stream = []
-        for group_idx in range(outer_steps):
-            print(f"Computing the {group_idx + 1}th/{num_sample_groups} group of video tokens...")
-
+        for group_idx in self.progress_bar(
+            list(range(outer_steps)), disable="outer" not in show_progress
+        ):
             prompt_with_actions = prompt
-            if prompt is not None and actions_in_prompt:
+            if actions_in_prompt:
                 control_end = control_start + num_frames
-                current_controls = control_signal.split(",")[control_start:control_end]
-                actions = [self.CONTROL_SIGNAL_TO_PROMPT[c] for c in current_controls]
+
+                actions = []
+                for c in control_signal.split(",")[control_start:control_end]:
+                    action = self.CONTROL_SIGNAL_TO_PROMPT[c]
+                    # We train the model with one action per video frame.
+                    actions.extend([action] * actions_in_prompt_repeat)
+
                 actions = ", ".join(actions)
-                prompt_with_actions = f"Actions: {actions}. Description: {prompt}"
+
+                if prompt is not None:
+                    prompt_with_actions = f"Actions: {actions}. Description: {prompt}"
+                else:
+                    prompt_with_actions = actions
 
             # 3. Encode input prompt
             curr_prompt_embeds, curr_negative_embeds = self.encode_prompt(
@@ -1148,7 +1160,9 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             control_emb = control_emb.unsqueeze(0).to(self.transformer.dtype).contiguous()
             control_start += window_size
 
-            with self.progress_bar(total=inner_steps) as progress_bar:
+            with self.progress_bar(
+                total=inner_steps, disable="inner" not in show_progress
+            ) as progress_bar:
                 # for DPM-solver++
                 old_pred_original_sample = None
                 for i in range(inner_steps):
@@ -1252,3 +1266,10 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             return (video,)
 
         return CogVideoXPipelineOutput(frames=video)
+
+    def progress_bar(self, iterable=None, total=None, **kwargs):
+        old_config = getattr(self, "_progress_bar_config", {})
+        self.set_progress_bar_config(**kwargs)
+        bar = super().progress_bar(iterable, total)
+        self.set_progress_bar_config(**old_config)
+        return bar

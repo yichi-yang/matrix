@@ -73,8 +73,11 @@ def generate_video(
     num_sample_groups: int = 20,
     init_video_clip_frame: int = 65,
     actions_in_prompt: bool = False,
+    actions_in_prompt_repeat: int = 4, 
     cfg_zero_prompt_embed: bool = False,
     no_noise_on_condition_frames: bool = False,
+    pipe: CogVideoXStreamingPipeline = None,
+    show_progress: str | tuple = 'inner',
 ):
     """
     Generates a video based on the given prompt and saves it to the specified path.
@@ -96,14 +99,20 @@ def generate_video(
     - fps (int): The frames per second for the generated video.
     """
 
-    transformer = CogVideoXTransformer3DModel.from_pretrained(
-        os.path.join(transformer_path or model_path, "transformer"),
-        torch_dtype=dtype,
-        low_cpu_mem_usage=False
-    )
-    scheduler = CogVideoXSwinDPMScheduler.from_config(os.path.join(model_path, "scheduler"), timestep_spacing="trailing")
+    if pipe is None:
+        transformer = CogVideoXTransformer3DModel.from_pretrained(
+            os.path.join(transformer_path or model_path, "transformer"),
+            torch_dtype=dtype,
+            low_cpu_mem_usage=False
+        )
+        scheduler = CogVideoXSwinDPMScheduler.from_config(os.path.join(model_path, "scheduler"), timestep_spacing="trailing")
 
-    pipe = CogVideoXStreamingPipeline.from_pretrained(model_path, transformer=transformer, scheduler=scheduler, torch_dtype=dtype)
+        pipe = CogVideoXStreamingPipeline.from_pretrained(model_path, transformer=transformer, scheduler=scheduler, torch_dtype=dtype)
+
+        pipe.to(gpu_id)
+        # pipe.enable_sequential_cpu_offload()
+        pipe.vae.enable_slicing()
+        pipe.vae.enable_tiling()
 
     # Init_video should be pillow list.
     video_reader = decord.VideoReader(video_path)
@@ -114,6 +123,10 @@ def generate_video(
     frame_indices = frame_indices[:init_video_clip_frame]
     video = video_reader.get_batch(frame_indices).asnumpy()
     video = [PIL.Image.fromarray(frame) for frame in video]
+
+    if control_signal is None:
+        control_signal = ",".join(["D"] * init_video_clip_frame)
+
     if sampling_interval > 1:
         control_signal_list = control_signal.split(",")
         control_signal_list = [control_signal_list[i] for i in frame_indices]
@@ -125,11 +138,6 @@ def generate_video(
         pipe.fuse_lora(components=["transformer"],
             # lora_scale=1 / lora_rank  # It seems that there are some issues here, removed.
             )
-
-    pipe.to(gpu_id)
-    # pipe.enable_sequential_cpu_offload()
-    pipe.vae.enable_slicing()
-    pipe.vae.enable_tiling()
 
     # 4. Generate the video frames based on the prompt.
     num_frames = len(video)
@@ -159,8 +167,10 @@ def generate_video(
             num_noise_groups=num_noise_groups,
             num_sample_groups=num_sample_groups,
             actions_in_prompt=actions_in_prompt,
+            actions_in_prompt_repeat=actions_in_prompt_repeat,
             cfg_zero_prompt_embed=cfg_zero_prompt_embed,
             no_noise_on_condition_frames=no_noise_on_condition_frames,
+            show_progress=show_progress,
         ).frames[0]
         export_to_video(video_generate, output_path, fps=fps)
 
@@ -185,7 +195,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42, help="The seed for reproducibility")
     parser.add_argument("--gpu_id", type=int, default=0, help="GPU ID")
     # control arguments
-    parser.add_argument("--control_signal", type=str, required=True, help="control signal of original video (and can be longer which contains the control signal of video to be generated).")
+    parser.add_argument("--control_signal", type=str, help="control signal of original video (and can be longer which contains the control signal of video to be generated).")
     parser.add_argument("--control_signal_type", type=str, choices=["raw", "downsampled"], default="downsampled", help="Whether the control signal is recorded in video raw fps or downsampled fps (i.e. 4 fps), if raw, its length >= init_video_clip_frame.")
     parser.add_argument("--control_seed", type=int, default=42, help="The seed for reproducibility")
     # swin arguments
