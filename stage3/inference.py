@@ -14,6 +14,7 @@ from diffusers.utils import export_to_video, load_image, load_video
 
 import decord
 import PIL.Image
+from typing import Callable
 
 
 def generate_random_control_signal(
@@ -74,10 +75,13 @@ def generate_video(
     init_video_clip_frame: int = 65,
     actions_in_prompt: bool = False,
     actions_in_prompt_repeat: int = 4, 
+    actions_in_prompt_fn: Callable[[list[str], str], str | None] | None = None,
     cfg_zero_prompt_embed: bool = False,
     no_noise_on_condition_frames: bool = False,
     pipe: CogVideoXStreamingPipeline = None,
     show_progress: str | tuple = 'inner',
+    resize_mode: str = "default",
+    uncond_transformer_path: str | None = None,
 ):
     """
     Generates a video based on the given prompt and saves it to the specified path.
@@ -107,7 +111,16 @@ def generate_video(
         )
         scheduler = CogVideoXSwinDPMScheduler.from_config(os.path.join(model_path, "scheduler"), timestep_spacing="trailing")
 
-        pipe = CogVideoXStreamingPipeline.from_pretrained(model_path, transformer=transformer, scheduler=scheduler, torch_dtype=dtype)
+        if uncond_transformer_path is not None:
+            uncond_transformer = CogVideoXTransformer3DModel.from_pretrained(
+                os.path.join(uncond_transformer_path, "transformer"),
+                torch_dtype=dtype,
+                low_cpu_mem_usage=False
+            )
+        else:
+            uncond_transformer = None
+
+        pipe = CogVideoXStreamingPipeline.from_pretrained(model_path, transformer=transformer, scheduler=scheduler, torch_dtype=dtype, uncond_transformer=uncond_transformer)
 
         pipe.to(gpu_id)
         # pipe.enable_sequential_cpu_offload()
@@ -168,9 +181,11 @@ def generate_video(
             num_sample_groups=num_sample_groups,
             actions_in_prompt=actions_in_prompt,
             actions_in_prompt_repeat=actions_in_prompt_repeat,
+            actions_in_prompt_fn=actions_in_prompt_fn,
             cfg_zero_prompt_embed=cfg_zero_prompt_embed,
             no_noise_on_condition_frames=no_noise_on_condition_frames,
             show_progress=show_progress,
+            resize_mode=resize_mode,
         ).frames[0]
         export_to_video(video_generate, output_path, fps=fps)
 

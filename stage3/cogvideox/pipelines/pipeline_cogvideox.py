@@ -27,6 +27,7 @@ from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.utils import logging, replace_example_docstring
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.video_processor import VideoProcessor
+from diffusers.utils import PIL_INTERPOLATION
 
 from ..loader import CogVideoXLoraLoaderMixin
 from ..autoencoder import AutoencoderKLCogVideoX
@@ -40,6 +41,8 @@ from .pipeline_output import CogVideoXPipelineOutput
 from ..control_adapter import CONTROL_SIGNAL_TO_PROMPT
 
 from transformers import AutoTokenizer, CLIPModel
+from PIL import Image
+
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -146,6 +149,72 @@ def retrieve_timesteps(
     return timesteps, num_inference_steps
 
 
+class CustomVideoProcessor(VideoProcessor):
+    def preprocess_video(self, video, height=None, width=None, resize_mode="default"):
+        if not (
+            isinstance(video, list)
+            and all(isinstance(frame, Image.Image) for frame in video)
+        ):
+            raise NotImplementedError()
+
+        video = [video]
+        video = torch.stack(
+            [
+                self.preprocess(
+                    img, height=height, width=width, resize_mode=resize_mode
+                )
+                for img in video
+            ],
+            dim=0,
+        )
+
+        # move the number of channels before the number of frames.
+        video = video.permute(0, 2, 1, 3, 4)
+
+        return video
+
+    def _resize_and_pad(
+        self,
+        image: Image.Image,
+        width: int,
+        height: int,
+    ) -> Image.Image:
+        ratio = width / height
+        src_ratio = image.width / image.height
+
+        src_w = width if ratio < src_ratio else image.width * height // image.height
+        src_h = height if ratio >= src_ratio else image.height * width // image.width
+
+        resized = image.resize((src_w, src_h), resample=PIL_INTERPOLATION["lanczos"])
+        res = Image.new("RGB", (width, height))
+        res.paste(resized, box=(width // 2 - src_w // 2, height // 2 - src_h // 2))
+
+        return res
+
+    def resize(
+        self,
+        image: Union[Image.Image, np.ndarray, torch.Tensor],
+        height: int,
+        width: int,
+        resize_mode: str = "default",  # "default", "fill", "crop"
+    ) -> Union[Image.Image, np.ndarray, torch.Tensor]:
+        if resize_mode != "default" and not isinstance(image, Image.Image):
+            raise ValueError(f"Only PIL image input is supported for resize_mode {resize_mode}")
+        if isinstance(image, Image.Image):
+            if resize_mode == "default":
+                image = image.resize((width, height), resample=PIL_INTERPOLATION[self.config.resample])
+            elif resize_mode == "fill":
+                image = self._resize_and_fill(image, width, height)
+            elif resize_mode == "crop":
+                image = self._resize_and_crop(image, width, height)
+            elif resize_mode == "pad":
+                image = self._resize_and_pad(image, width, height)
+            else:
+                raise ValueError(f"resize_mode {resize_mode} is not supported")
+
+        return image
+
+
 class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
     r"""
     Pipeline for text-to-video generation using CogVideoX.
@@ -201,7 +270,7 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
             self.vae.config.scaling_factor if hasattr(self, "vae") and self.vae is not None else 0.7
         )
 
-        self.video_processor = VideoProcessor(vae_scale_factor=self.vae_scale_factor_spatial)
+        self.video_processor = CustomVideoProcessor(vae_scale_factor=self.vae_scale_factor_spatial)
 
     def _get_t5_prompt_embeds(
         self,
@@ -665,7 +734,7 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         )
         if do_classifier_free_guidance:
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
-        
+
         # Control signal
         control_emb = self.get_control_from_signal(control_signal)
         control_emb = control_emb.unsqueeze(0).to(prompt_embeds.dtype).contiguous()
@@ -820,6 +889,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         vae: AutoencoderKLCogVideoX,
         transformer: CogVideoXTransformer3DModel,
         scheduler: Union[CogVideoXDPMScheduler, CogVideoXSwinDPMScheduler],
+        uncond_transformer: CogVideoXTransformer3DModel,
     ):
         super().__init__(
             tokenizer,
@@ -828,6 +898,8 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             transformer,
             scheduler,
         )
+
+        self.register_modules(uncond_transformer=uncond_transformer)
 
     def prepare_latents(
         self,
@@ -989,9 +1061,11 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         with_frame_cond=True,  # whether to use frame condition, if ture the first frame is used as condition with zero noise.
         actions_in_prompt: bool = False,
         actions_in_prompt_repeat: int = 4,
+        actions_in_prompt_fn: Callable[[list[str], str], str | None] | None = None,
         cfg_zero_prompt_embed: bool = False,
         no_noise_on_condition_frames: bool = False,
-        show_progress: str | tuple = "inner"
+        show_progress: str | tuple = "inner",
+        resize_mode: str = "deault",
     ):
         assert isinstance(self.scheduler, CogVideoXSwinDPMScheduler)
 
@@ -1080,7 +1154,9 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
 
         # 5. Prepare latents.
         if latents is None:
-            init_video = self.video_processor.preprocess_video(init_video, height=height, width=width)
+            init_video = self.video_processor.preprocess_video(
+                init_video, height=height, width=width, resize_mode=resize_mode
+            )
             init_video = init_video.to(device=device, dtype=self.transformer.dtype)
             latents = None
         else:
@@ -1126,18 +1202,24 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             if actions_in_prompt:
                 control_end = control_start + num_frames
 
-                actions = []
+                current_controls = []
                 for c in control_signal.split(",")[control_start:control_end]:
-                    action = self.CONTROL_SIGNAL_TO_PROMPT[c]
-                    # We train the model with one action per video frame.
-                    actions.extend([action] * actions_in_prompt_repeat)
+                    current_controls.extend([c] * actions_in_prompt_repeat)
 
-                actions = ", ".join(actions)
-
-                if prompt is not None:
-                    prompt_with_actions = f"Actions: {actions}. Description: {prompt}"
+                if actions_in_prompt_fn is not None:
+                    prompt_with_actions = actions_in_prompt_fn(current_controls, prompt)
                 else:
-                    prompt_with_actions = actions
+                    actions = [
+                        self.CONTROL_SIGNAL_TO_PROMPT[c] for c in current_controls
+                    ]
+                    actions = ", ".join(actions)
+
+                    if prompt is not None:
+                        prompt_with_actions = (
+                            f"Actions: {actions}. Description: {prompt}"
+                        )
+                    else:
+                        prompt_with_actions = actions
 
             # 3. Encode input prompt
             curr_prompt_embeds, curr_negative_embeds = self.encode_prompt(
@@ -1152,8 +1234,6 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             )
             if cfg_zero_prompt_embed:
                 curr_negative_embeds = torch.zeros_like(curr_negative_embeds)
-            if do_classifier_free_guidance:
-                curr_prompt_embeds = torch.cat([curr_negative_embeds, curr_prompt_embeds], dim=0)
 
             # Control signal
             control_emb = self.get_control_from_signal(control_signal, control_start, control_start+num_frames)
@@ -1177,14 +1257,13 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
                     else:
                         timesteps_back = None
 
-                    latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
                     # latent_model_input = self.scheduler.scale_model_input(
                     #     latent_model_input, t
                     # )
 
                     # predict noise model_output
                     noise_pred = self.transformer(
-                        hidden_states=latent_model_input,
+                        hidden_states=latents,
                         encoder_hidden_states=curr_prompt_embeds,
                         timestep=timesteps,
                         image_rotary_emb=image_rotary_emb,
@@ -1201,8 +1280,22 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
                     #         (1 - math.cos(math.pi * ((num_inference_steps - t.item()) / num_inference_steps) ** 5.0)) / 2
                     #     )
                     if do_classifier_free_guidance:
-                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                        noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
+                        if self.uncond_transformer is not None:
+                            uncond_transformer = self.uncond_transformer
+                        else:
+                            uncond_transformer = self.transformer
+
+                        noise_pred_uncond = uncond_transformer(
+                            hidden_states=latents,
+                            encoder_hidden_states=curr_negative_embeds,
+                            timestep=timesteps,
+                            image_rotary_emb=image_rotary_emb,
+                            attention_kwargs=attention_kwargs,
+                            return_dict=False,
+                            control_emb=control_emb,
+                        )[0]
+                        noise_pred_uncond = noise_pred_uncond.float()
+                        noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred - noise_pred_uncond)
 
                     # compute the previous noisy sample x_t -> x_t-1
                     if with_frame_cond:
